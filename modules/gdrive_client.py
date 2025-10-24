@@ -8,13 +8,20 @@ Provides clients for interacting with Google Drive API:
 
 import io
 import logging
+import time
 from datetime import datetime
 from typing import Optional, Dict
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
+import socket
 
 logger = logging.getLogger(__name__)
+
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds
+TIMEOUT = 60  # seconds
 
 
 class GoogleDocsClient:
@@ -28,12 +35,16 @@ class GoogleDocsClient:
             credentials: Google OAuth2 credentials
         """
         self.credentials = credentials
+        # Set timeout for HTTP requests
         self.drive_service = build('drive', 'v3', credentials=credentials)
         self.docs_service = build('docs', 'v1', credentials=credentials)
 
+        # Set default socket timeout
+        socket.setdefaulttimeout(TIMEOUT)
+
     def get_doc_content(self, doc_id: str) -> str:
         """
-        Get Google Doc content as HTML
+        Get Google Doc content as HTML with retry mechanism
 
         Args:
             doc_id: Google Doc ID
@@ -41,18 +52,48 @@ class GoogleDocsClient:
         Returns:
             str: Document content in HTML format
         """
-        try:
-            # Export as HTML
-            request = self.drive_service.files().export_media(
-                fileId=doc_id,
-                mimeType='text/html'
-            )
-            content = request.execute()
-            logger.info(f"Retrieved content from Google Doc: {doc_id}")
-            return content.decode('utf-8')
-        except HttpError as e:
-            logger.error(f"Error retrieving doc {doc_id}: {e}")
-            raise
+        last_error = None
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                # Export as HTML
+                request = self.drive_service.files().export_media(
+                    fileId=doc_id,
+                    mimeType='text/html'
+                )
+                content = request.execute()
+                logger.info(f"Retrieved content from Google Doc: {doc_id}")
+                return content.decode('utf-8')
+
+            except socket.timeout as e:
+                last_error = e
+                logger.warning(f"Timeout retrieving doc {doc_id} (attempt {attempt + 1}/{MAX_RETRIES})")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (attempt + 1))  # Exponential backoff
+                    continue
+
+            except HttpError as e:
+                # Don't retry on 404 or permission errors
+                if e.resp.status in [404, 403]:
+                    logger.error(f"Error retrieving doc {doc_id}: {e}")
+                    raise
+                # Retry on other HTTP errors
+                last_error = e
+                logger.warning(f"HTTP error retrieving doc {doc_id} (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (attempt + 1))
+                    continue
+
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Error retrieving doc {doc_id} (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (attempt + 1))
+                    continue
+
+        # All retries failed
+        logger.error(f"Failed to retrieve doc {doc_id} after {MAX_RETRIES} attempts")
+        raise last_error
 
     def get_doc_plain_text(self, doc_id: str) -> str:
         """
@@ -144,7 +185,15 @@ class GoogleDocsClient:
             logger.debug(f"Doc {doc_id} modified at: {modified_time}")
             return modified_time
         except HttpError as e:
-            logger.error(f"Error getting modified time for doc {doc_id}: {e}")
+            if e.resp.status == 404:
+                logger.error(
+                    f"Google Doc not found: {doc_id}\n"
+                    f"  → Please share this document with: "
+                    f"obsidian-sync-account-aw@obsidian-sync-vault.iam.gserviceaccount.com\n"
+                    f"  → Document URL: https://docs.google.com/document/d/{doc_id}/edit"
+                )
+            else:
+                logger.error(f"Error getting modified time for doc {doc_id}: {e}")
             raise
 
     def get_doc_info(self, doc_id: str) -> Dict:
