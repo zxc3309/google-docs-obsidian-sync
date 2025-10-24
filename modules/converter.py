@@ -6,9 +6,75 @@ Handles conversion between Google Docs and Markdown formats
 
 import logging
 import re
-from markdownify import markdownify as md
+from markdownify import MarkdownConverter
 
 logger = logging.getLogger(__name__)
+
+
+class ObsidianMarkdownConverter(MarkdownConverter):
+    """Custom Markdown converter optimized for Obsidian"""
+
+    def convert_li(self, el, text, convert_as_inline):
+        """Convert <li> with proper 4-space indentation for Obsidian"""
+        # Get the parent element to determine list type
+        parent = el.parent
+        if parent is not None and parent.name == 'ul':
+            # Unordered list
+            bullet = self.options['bullets']
+        else:
+            # Ordered list
+            bullet = '1.'
+
+        # Calculate nesting level by counting parent <ul>/<ol> tags
+        nesting_level = 0
+        current = el.parent
+        while current is not None:
+            if current.name in ['ul', 'ol']:
+                nesting_level += 1
+            current = current.parent
+
+        # Obsidian uses 4 spaces per nesting level (minus 1 because first level has no indent)
+        indent = '    ' * max(0, nesting_level - 1)
+
+        # Clean up the text, but preserve nested list indentation
+        # Only strip if this is a simple list item (no nested lists)
+        if '\n' in text and re.search(r'\n\s*[-*+\d]\s', text):
+            # This list item contains nested list items, preserve their indentation
+            # Only strip trailing whitespace and leading/trailing newlines
+            text = text.strip('\n')
+            # Strip trailing whitespace from each line but preserve leading spaces
+            lines = text.split('\n')
+            text = '\n'.join(line.rstrip() for line in lines)
+        else:
+            # Simple list item, safe to strip all whitespace
+            text = text.strip()
+
+        return f'{indent}{bullet} {text}\n'
+
+    def convert_ul(self, el, text, convert_as_inline):
+        """Convert <ul> and handle nested lists properly"""
+        # Check if this is a nested list (has a parent <li>)
+        parent_li = el.find_parent('li')
+
+        if parent_li is not None:
+            # This is a nested list, return text without extra newlines
+            # The parent <li> will handle formatting
+            return '\n' + text
+        else:
+            # This is a top-level list
+            return text + '\n'
+
+    def convert_ol(self, el, text, convert_as_inline):
+        """Convert <ol> and handle nested lists properly"""
+        # Check if this is a nested list (has a parent <li>)
+        parent_li = el.find_parent('li')
+
+        if parent_li is not None:
+            # This is a nested list, return text without extra newlines
+            return '\n' + text
+        else:
+            # This is a top-level list
+            return text + '\n'
 
 
 class DocumentConverter:
@@ -36,17 +102,14 @@ class DocumentConverter:
             # Reconstruct nested lists based on margin-left
             html_content = DocumentConverter._reconstruct_nested_lists(html_content)
 
-            # Convert HTML to Markdown
-            markdown = md(
-                html_content,
+            # Convert HTML to Markdown using custom Obsidian converter
+            converter = ObsidianMarkdownConverter(
                 heading_style="ATX",  # Use # for headings
                 bullets="-",  # Use - for unordered lists
                 strong_em_symbol="**",  # Use ** for bold
                 strip=['style', 'script']  # Remove style and script tags
             )
-
-            # Keep tabs for nested lists (Obsidian uses tabs for list indentation)
-            # Do NOT convert tabs to spaces
+            markdown = converter.convert(html_content)
 
             # Clean up extra whitespace
             markdown = re.sub(r'\n{3,}', '\n\n', markdown)  # Max 2 consecutive newlines
@@ -72,13 +135,13 @@ class DocumentConverter:
 
         Google Docs exports lists as separate <ul> blocks with margin-left
         indicating the nesting level. This function reconstructs proper
-        nested <ul> structure.
+        nested <ul> structure while preserving ALL content (lists and non-lists).
 
         Args:
             html: HTML content with Google Docs list structure
 
         Returns:
-            str: HTML with reconstructed nested lists
+            str: HTML with reconstructed nested lists and preserved content
         """
         from html.parser import HTMLParser
 
@@ -166,16 +229,19 @@ class DocumentConverter:
             local_parser = GoogleListParser()
             try:
                 local_parser.feed(ul_content)
-            except:
+            except Exception as e:
+                logger.warning(f"Failed to parse list block: {e}")
                 return ul_content
 
             if not local_parser.items:
+                # No items found, return original content
                 return ul_content
 
             # Rebuild with proper nesting
             return f'<ul>{build_nested_html(local_parser.items)}</ul>'
 
         # Replace each <ul>...</ul> block independently
+        # This preserves everything outside <ul> tags (paragraphs, headings, etc.)
         html = re.sub(r'<ul[^>]*>.*?</ul>', process_one_list, html, flags=re.DOTALL)
 
         return html
