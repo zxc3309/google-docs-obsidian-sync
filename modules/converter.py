@@ -68,11 +68,11 @@ class DocumentConverter:
     @staticmethod
     def _reconstruct_nested_lists(html: str) -> str:
         """
-        Reconstruct nested list structure based on margin-left values
+        Reconstruct nested list structure based on class names and margin-left
 
-        Google Docs exports lists as separate <ul> blocks with margin-left
-        indicating the nesting level. This function reconstructs proper
-        nested <ul> structure.
+        Google Docs exports lists as separate <ul> blocks with class names
+        indicating list groups and nesting levels. This function groups
+        consecutive related <ul> blocks and rebuilds proper nested structure.
 
         Args:
             html: HTML content with Google Docs list structure
@@ -83,9 +83,10 @@ class DocumentConverter:
         from html.parser import HTMLParser
 
         class ListItem:
-            def __init__(self, level, content):
+            def __init__(self, level, content, class_level=None):
                 self.level = level
                 self.content = content
+                self.class_level = class_level  # Level from class name (-0, -1, -2)
                 self.children = []
 
         class GoogleListParser(HTMLParser):
@@ -128,7 +129,88 @@ class DocumentConverter:
                 if self.in_li:
                     self.li_content.append(data)
 
-        # Build nested structure from a list of items
+        # Extract class name and level from <ul> tag
+        def extract_list_info(ul_tag):
+            """Extract list prefix and level from <ul> class attribute"""
+            class_match = re.search(r'class="([^"]*)"', ul_tag)
+            if not class_match:
+                return None, None
+
+            class_name = class_match.group(1)
+            # Pattern: lst-kix_XXXXX-N where N is the level
+            level_match = re.search(r'(lst-kix_[a-z0-9]+)-(\d+)', class_name)
+            if level_match:
+                prefix = level_match.group(1)  # e.g., "lst-kix_dnvzcw1w4rp0"
+                level = int(level_match.group(2))  # e.g., 0, 1, 2
+                return prefix, level
+            return None, None
+
+        # Group consecutive <ul> blocks that belong together
+        def group_consecutive_lists(html_content):
+            """Find groups of consecutive <ul> blocks with same prefix"""
+            groups = []
+            current_group = []
+            current_prefix = None
+            last_end = 0
+
+            # Find all <ul>...</ul> blocks
+            for match in re.finditer(r'<ul[^>]*>.*?</ul>', html_content, re.DOTALL):
+                ul_block = match.group(0)
+                prefix, level = extract_list_info(ul_block)
+
+                # Get content before this <ul> (non-list content)
+                before_content = html_content[last_end:match.start()]
+
+                # Check if this continues the current group
+                if prefix and prefix == current_prefix:
+                    # Same group, add to current
+                    current_group.append((ul_block, level, match.start(), match.end()))
+                else:
+                    # Different group or first group
+                    if current_group:
+                        # Save previous group
+                        groups.append({
+                            'prefix': current_prefix,
+                            'blocks': current_group,
+                            'before': groups[-1]['after'] if groups else html_content[:current_group[0][2]],
+                            'start': current_group[0][2],
+                            'end': current_group[-1][3]
+                        })
+
+                    # Start new group
+                    if prefix:
+                        current_prefix = prefix
+                        current_group = [(ul_block, level, match.start(), match.end())]
+                    else:
+                        # No prefix, treat as standalone
+                        if before_content.strip():
+                            groups.append({
+                                'prefix': None,
+                                'blocks': [(ul_block, None, match.start(), match.end())],
+                                'before': before_content,
+                                'start': match.start(),
+                                'end': match.end()
+                            })
+                        else:
+                            current_group = [(ul_block, None, match.start(), match.end())]
+                            current_prefix = None
+
+                last_end = match.end()
+
+            # Don't forget the last group
+            if current_group:
+                groups.append({
+                    'prefix': current_prefix,
+                    'blocks': current_group,
+                    'before': groups[-1]['after'] if groups else html_content[:current_group[0][2]],
+                    'start': current_group[0][2],
+                    'end': current_group[-1][3]
+                })
+                groups[-1]['after'] = html_content[last_end:]
+
+            return groups
+
+        # Build nested HTML from grouped items
         def build_nested_html(items):
             if not items:
                 return ''
@@ -158,27 +240,126 @@ class DocumentConverter:
 
             return ''.join(html_parts)
 
-        # Process each <ul> block separately to preserve content between lists
-        def process_one_list(match):
-            ul_content = match.group(0)
+        # Process groups and merge consecutive blocks
+        def process_list_group(group):
+            """Process a group of related <ul> blocks"""
+            if not group or not group['blocks']:
+                return group['blocks'][0][0] if group['blocks'] else ''
 
-            # Parse this specific <ul> block
-            local_parser = GoogleListParser()
-            try:
-                local_parser.feed(ul_content)
-            except:
-                return ul_content
+            # Parse all blocks in this group
+            all_items = []
+            for ul_block, class_level, _, _ in group['blocks']:
+                parser = GoogleListParser()
+                try:
+                    parser.feed(ul_block)
+                    # Update class_level if available
+                    if class_level is not None:
+                        for item in parser.items:
+                            item.class_level = class_level
+                            # Use class level if it's more reliable
+                            if class_level > 0:
+                                item.level = class_level
+                    all_items.extend(parser.items)
+                except:
+                    pass
 
-            if not local_parser.items:
-                return ul_content
+            if not all_items:
+                return ''.join([block[0] for block in group['blocks']])
 
             # Rebuild with proper nesting
-            return f'<ul>{build_nested_html(local_parser.items)}</ul>'
+            return f'<ul>{build_nested_html(all_items)}</ul>'
 
-        # Replace each <ul>...</ul> block independently
-        html = re.sub(r'<ul[^>]*>.*?</ul>', process_one_list, html, flags=re.DOTALL)
+        # Main processing: group consecutive lists and rebuild with proper nesting
+        # This approach merges <ul> blocks that belong together while preserving non-list content
 
-        return html
+        # Find all <ul> positions and group them
+        ul_positions = []
+        for match in re.finditer(r'<ul[^>]*>.*?</ul>', html, re.DOTALL):
+            ul_block = match.group(0)
+            prefix, level = extract_list_info(ul_block)
+            ul_positions.append({
+                'start': match.start(),
+                'end': match.end(),
+                'block': ul_block,
+                'prefix': prefix,
+                'level': level
+            })
+
+        if not ul_positions:
+            return html
+
+        # Group consecutive <ul> blocks with same prefix
+        result_parts = []
+        last_pos = 0
+        i = 0
+
+        while i < len(ul_positions):
+            # Add non-list content before this block
+            result_parts.append(html[last_pos:ul_positions[i]['start']])
+
+            # Check if next blocks belong to the same group (same prefix)
+            current_prefix = ul_positions[i]['prefix']
+            group_blocks = [ul_positions[i]]
+            j = i + 1
+
+            # Look ahead to find consecutive blocks with same prefix
+            while j < len(ul_positions):
+                # Check if there's only whitespace between blocks
+                between_content = html[ul_positions[j-1]['end']:ul_positions[j]['start']]
+                is_consecutive = between_content.strip() == ''
+
+                if is_consecutive and ul_positions[j]['prefix'] == current_prefix:
+                    group_blocks.append(ul_positions[j])
+                    j += 1
+                else:
+                    break
+
+            # Process this group
+            if len(group_blocks) > 1 and current_prefix:
+                # Multiple blocks with same prefix - merge them
+                all_items = []
+                for block_info in group_blocks:
+                    parser = GoogleListParser()
+                    try:
+                        parser.feed(block_info['block'])
+                        # Set level from class if available
+                        if block_info['level'] is not None:
+                            for item in parser.items:
+                                item.class_level = block_info['level']
+                                # Use class level as the authoritative level
+                                item.level = block_info['level']
+                        all_items.extend(parser.items)
+                    except:
+                        pass
+
+                if all_items:
+                    result_parts.append(f'<ul>{build_nested_html(all_items)}</ul>')
+                else:
+                    # Fallback: keep original blocks
+                    for block_info in group_blocks:
+                        result_parts.append(block_info['block'])
+
+                last_pos = group_blocks[-1]['end']
+                i = j
+            else:
+                # Single block or no prefix - process normally
+                parser = GoogleListParser()
+                try:
+                    parser.feed(group_blocks[0]['block'])
+                    if parser.items:
+                        result_parts.append(f'<ul>{build_nested_html(parser.items)}</ul>')
+                    else:
+                        result_parts.append(group_blocks[0]['block'])
+                except:
+                    result_parts.append(group_blocks[0]['block'])
+
+                last_pos = group_blocks[0]['end']
+                i += 1
+
+        # Add remaining content
+        result_parts.append(html[last_pos:])
+
+        return ''.join(result_parts)
 
     @staticmethod
     def _clean_google_docs_artifacts(markdown: str) -> str:
