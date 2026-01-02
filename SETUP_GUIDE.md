@@ -277,6 +277,20 @@ mappings:
 CONFIG_MAPPINGS='[{"doc_id":"doc_id_1","vault_path":"path1.md"},{"doc_id":"doc_id_2","vault_path":"path2.md"}]'
 ```
 
+#### Option 3: Using Google Sheet (recommended for many docs)
+
+```bash
+# Required
+SHEET_ID="your_google_sheet_id"          # e.g., 1Goi2qjaw26_yDPAxtKx5Mdgbr8knhSCWaeRPXiV-qTM
+
+# Optional
+SHEET_RANGE="Sheet1!A:B"                 # default; first row headers: doc_id, vault_path
+```
+
+Notes:
+- Share the Sheet with the Account A service account email so it can read it.
+- When `SHEET_ID` is set, mappings from the Sheet override `config.yaml` / `CONFIG_YAML` / `CONFIG_MAPPINGS`.
+
 ### 4. Deploy
 
 1. Railway will automatically deploy when you push to GitHub

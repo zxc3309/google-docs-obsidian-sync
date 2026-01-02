@@ -92,6 +92,8 @@ Google Drive Account A (Google Docs)
    - `VAULT_FOLDER_ID`: Google Drive folder ID for vault
    - `CONFIG_YAML`: Your config.yaml content (or use file)
    - `SYNC_INTERVAL`: Sync interval in seconds (e.g., 300)
+   - `SHEET_ID` (optional): Google Sheet ID for mappings (share with Account A service account)
+   - `SHEET_RANGE` (optional): Range to read, default `Sheet1!A:B` with header row `doc_id, vault_path`
 
 ## Configuration
 
@@ -106,6 +108,13 @@ mappings:
   - doc_id: "google_doc_id_from_account_a"
     vault_path: "path/in/vault.md"
 ```
+
+### Using Google Sheet for mappings
+
+- Set `SHEET_ID` (and optionally `SHEET_RANGE`, default `Sheet1!A:B`) in Railway.
+- Share the Sheet with the Account A service account email so it can read it.
+- First row headers must be `doc_id` and `vault_path`; data rows list each mapping.
+- When `SHEET_ID` is set, mappings from the Sheet override `config.yaml`/`CONFIG_YAML`.
 
 ### Finding IDs
 

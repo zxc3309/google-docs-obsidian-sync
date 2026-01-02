@@ -10,7 +10,7 @@ import io
 import logging
 import time
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
@@ -22,6 +22,65 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # seconds
 TIMEOUT = 60  # seconds
+
+
+class GoogleSheetsClient:
+    """Client for reading mappings from Google Sheets"""
+
+    def __init__(self, credentials):
+        """
+        Initialize Google Sheets client
+
+        Args:
+            credentials: Google OAuth2 credentials
+        """
+        self.credentials = credentials
+        self.sheets_service = build('sheets', 'v4', credentials=credentials)
+
+    def get_mappings(self, sheet_id: str, sheet_range: str) -> List[Dict[str, str]]:
+        """
+        Read mappings from Google Sheet and normalize
+
+        Args:
+            sheet_id: Spreadsheet ID
+            sheet_range: Range to read (e.g., 'Sheet1!A:B')
+
+        Returns:
+            list: [{ 'doc_id': ..., 'vault_path': ... }, ...]
+        """
+        result = self.sheets_service.spreadsheets().values().get(
+            spreadsheetId=sheet_id,
+            range=sheet_range
+        ).execute()
+        values = result.get('values', [])
+
+        if not values or len(values) < 2:
+            logger.warning("Sheet has no data rows for mappings")
+            return []
+
+        headers = [h.strip().lower() for h in values[0]]
+        try:
+            doc_idx = headers.index('doc_id')
+            vault_idx = headers.index('vault_path')
+        except ValueError:
+            raise ValueError("Sheet header must include 'doc_id' and 'vault_path'")
+
+        mappings: List[Dict[str, str]] = []
+        for row in values[1:]:
+            # Guard missing columns
+            doc_id = row[doc_idx].strip() if len(row) > doc_idx and row[doc_idx] else ''
+            vault_path = row[vault_idx].strip() if len(row) > vault_idx and row[vault_idx] else ''
+
+            if not doc_id or not vault_path:
+                continue
+
+            mappings.append({
+                'doc_id': doc_id,
+                'vault_path': vault_path
+            })
+
+        logger.info(f"Loaded {len(mappings)} mapping(s) from Google Sheet")
+        return mappings
 
 
 class GoogleDocsClient:

@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 # Google Drive API scopes
 SCOPES = [
     'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/documents'
+    'https://www.googleapis.com/auth/documents',
+    'https://www.googleapis.com/auth/spreadsheets.readonly',
 ]
 
 

@@ -17,7 +17,7 @@ import schedule
 from datetime import datetime
 
 from modules.auth import DualAccountAuth
-from modules.gdrive_client import GoogleDocsClient, VaultDriveClient
+from modules.gdrive_client import GoogleDocsClient, VaultDriveClient, GoogleSheetsClient
 from modules.sync_engine import SyncEngine
 from modules.conflict_handler import ConflictHandler
 
@@ -58,22 +58,46 @@ def load_config(config_path: str = None) -> dict:
         logger.info(f"Loading config from {config_path}")
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        return config
+    else:
+        # Try to load from environment variable
+        config_yaml = os.getenv('CONFIG_YAML')
+        if config_yaml:
+            logger.info("Loading config from CONFIG_YAML environment variable")
+            config = yaml.safe_load(config_yaml)
+        else:
+            # Default minimal config
+            logger.warning("No config file found, using environment variables only")
+            config = {
+                'sync_interval': int(os.getenv('SYNC_INTERVAL', 300)),
+                'vault_folder_id': os.getenv('VAULT_FOLDER_ID'),
+                'mappings': json.loads(os.getenv('CONFIG_MAPPINGS', '[]'))
+            }
 
-    # Try to load from environment variable
-    config_yaml = os.getenv('CONFIG_YAML')
-    if config_yaml:
-        logger.info("Loading config from CONFIG_YAML environment variable")
-        config = yaml.safe_load(config_yaml)
-        return config
+    # Optional: override mappings from Google Sheet if provided
+    sheet_id = os.getenv('SHEET_ID') or config.get('sheet_id')
+    if sheet_id:
+        sheet_range = os.getenv('SHEET_RANGE', config.get('sheet_range', 'Sheet1!A:B'))
+        logger.info(f"Loading mappings from Google Sheet {sheet_id} range {sheet_range}")
+        try:
+            auth = DualAccountAuth()
+            if not auth.is_authenticated():
+                raise ValueError("Authentication failed while loading Google Sheet mappings")
 
-    # Default minimal config
-    logger.warning("No config file found, using environment variables only")
-    return {
-        'sync_interval': int(os.getenv('SYNC_INTERVAL', 300)),
-        'vault_folder_id': os.getenv('VAULT_FOLDER_ID'),
-        'mappings': json.loads(os.getenv('CONFIG_MAPPINGS', '[]'))
-    }
+            sheets_client = GoogleSheetsClient(auth.get_account_a_credentials())
+            sheet_mappings = sheets_client.get_mappings(sheet_id, sheet_range)
+
+            if not sheet_mappings:
+                raise ValueError("No mappings found in Google Sheet")
+
+            config['mappings'] = sheet_mappings
+            config['sheet_id'] = sheet_id
+            config['sheet_range'] = sheet_range
+            logger.info(f"Loaded {len(sheet_mappings)} mapping(s) from Google Sheet")
+        except Exception as e:
+            logger.error(f"Failed to load mappings from Google Sheet: {e}")
+            raise
+
+    return config
 
 
 def initialize_services(config: dict):
