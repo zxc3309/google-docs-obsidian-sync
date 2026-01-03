@@ -16,7 +16,9 @@ from .conflict_handler import ConflictHandler
 logger = logging.getLogger(__name__)
 
 # Store state file locally instead of in Google Drive to avoid service account quota issues
-STATE_FILE_PATH = os.path.join(os.getcwd(), '.sync_state.json')
+# Use /data volume on Railway (persistent), fall back to current directory for local dev
+STATE_DIR = os.getenv('STATE_DIR', '/data' if os.path.exists('/data') else os.getcwd())
+STATE_FILE_PATH = os.path.join(STATE_DIR, '.sync_state.json')
 
 
 class SyncEngine:
@@ -78,6 +80,9 @@ class SyncEngine:
     def _save_state(self):
         """Save sync state to local file"""
         try:
+            # Ensure the state directory exists
+            os.makedirs(os.path.dirname(STATE_FILE_PATH), exist_ok=True)
+
             with open(STATE_FILE_PATH, 'w') as f:
                 json.dump(self.state, f, indent=2, default=str)
             logger.info(f"Saved sync state to {STATE_FILE_PATH}")
