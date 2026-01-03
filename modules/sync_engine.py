@@ -6,6 +6,7 @@ Core synchronization logic for Google Docs -> Obsidian Vault (one-way sync)
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
 from .gdrive_client import GoogleDocsClient, VaultDriveClient
@@ -14,7 +15,8 @@ from .conflict_handler import ConflictHandler
 
 logger = logging.getLogger(__name__)
 
-STATE_FILE_PATH = '.sync_state.json'
+# Store state file locally instead of in Google Drive to avoid service account quota issues
+STATE_FILE_PATH = os.path.join(os.getcwd(), '.sync_state.json')
 
 
 class SyncEngine:
@@ -43,16 +45,16 @@ class SyncEngine:
 
     def _load_state(self) -> Dict:
         """
-        Load sync state from Google Drive
+        Load sync state from local file
 
         Returns:
             dict: Sync state
         """
         try:
-            state_content = self.vault_client.read_file(STATE_FILE_PATH)
-            if state_content:
-                state = json.loads(state_content)
-                logger.info("Loaded sync state from Google Drive")
+            if os.path.exists(STATE_FILE_PATH):
+                with open(STATE_FILE_PATH, 'r') as f:
+                    state = json.load(f)
+                logger.info(f"Loaded sync state from {STATE_FILE_PATH}")
                 return state
             else:
                 logger.info("No existing sync state found, creating new")
@@ -74,11 +76,11 @@ class SyncEngine:
         }
 
     def _save_state(self):
-        """Save sync state to Google Drive"""
+        """Save sync state to local file"""
         try:
-            state_json = json.dumps(self.state, indent=2, default=str)
-            self.vault_client.write_file(STATE_FILE_PATH, state_json)
-            logger.info("Saved sync state to Google Drive")
+            with open(STATE_FILE_PATH, 'w') as f:
+                json.dump(self.state, f, indent=2, default=str)
+            logger.info(f"Saved sync state to {STATE_FILE_PATH}")
         except Exception as e:
             logger.error(f"Error saving state: {e}")
 

@@ -497,7 +497,8 @@ class VaultDriveClient:
                 # Update existing file
                 self.drive_service.files().update(
                     fileId=file_id,
-                    media_body=media
+                    media_body=media,
+                    supportsAllDrives=True
                 ).execute()
                 logger.info(f"Updated file in vault: {relative_path}")
             else:
@@ -517,7 +518,8 @@ class VaultDriveClient:
                 self.drive_service.files().create(
                     body=file_metadata,
                     media_body=media,
-                    fields='id'
+                    fields='id',
+                    supportsAllDrives=True
                 ).execute()
                 logger.info(f"Created new file in vault: {relative_path}")
 
@@ -566,7 +568,8 @@ class VaultDriveClient:
                 }
                 folder = self.drive_service.files().create(
                     body=file_metadata,
-                    fields='id'
+                    fields='id',
+                    supportsAllDrives=True
                 ).execute()
                 current_folder_id = folder.get('id')
                 logger.info(f"Created folder: {part}")
