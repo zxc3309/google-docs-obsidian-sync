@@ -43,6 +43,36 @@ def signal_handler(signum, frame):
     shutdown_flag = True
 
 
+def reload_sheet_mappings(config: dict) -> list:
+    """
+    Reload mappings from Google Sheet.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        list of mappings, or None if Sheet is not configured or read fails
+    """
+    sheet_id = os.getenv('SHEET_ID') or config.get('sheet_id')
+    if not sheet_id:
+        return None
+    sheet_range = os.getenv('SHEET_RANGE', config.get('sheet_range', 'Sheet1!A:B'))
+    logger.info(f"Loading mappings from Google Sheet {sheet_id} range {sheet_range}")
+    try:
+        auth = DualAccountAuth()
+        if not auth.is_authenticated():
+            raise ValueError("Authentication failed while loading Google Sheet mappings")
+        sheets_client = GoogleSheetsClient(auth.get_account_a_credentials())
+        sheet_mappings = sheets_client.get_mappings(sheet_id, sheet_range)
+        if not sheet_mappings:
+            raise ValueError("No mappings found in Google Sheet")
+        logger.info(f"Loaded {len(sheet_mappings)} mapping(s) from Google Sheet")
+        return sheet_mappings
+    except Exception as e:
+        logger.warning(f"Failed to reload sheet mappings, keeping current: {e}")
+        return None
+
+
 def load_config(config_path: str = None) -> dict:
     """
     Load configuration from file or environment
@@ -74,28 +104,16 @@ def load_config(config_path: str = None) -> dict:
             }
 
     # Optional: override mappings from Google Sheet if provided
-    sheet_id = os.getenv('SHEET_ID') or config.get('sheet_id')
-    if sheet_id:
-        sheet_range = os.getenv('SHEET_RANGE', config.get('sheet_range', 'Sheet1!A:B'))
-        logger.info(f"Loading mappings from Google Sheet {sheet_id} range {sheet_range}")
-        try:
-            auth = DualAccountAuth()
-            if not auth.is_authenticated():
-                raise ValueError("Authentication failed while loading Google Sheet mappings")
-
-            sheets_client = GoogleSheetsClient(auth.get_account_a_credentials())
-            sheet_mappings = sheets_client.get_mappings(sheet_id, sheet_range)
-
-            if not sheet_mappings:
-                raise ValueError("No mappings found in Google Sheet")
-
-            config['mappings'] = sheet_mappings
+    sheet_mappings = reload_sheet_mappings(config)
+    if sheet_mappings is not None:
+        config['mappings'] = sheet_mappings
+        sheet_id = os.getenv('SHEET_ID') or config.get('sheet_id')
+        if sheet_id:
             config['sheet_id'] = sheet_id
-            config['sheet_range'] = sheet_range
-            logger.info(f"Loaded {len(sheet_mappings)} mapping(s) from Google Sheet")
-        except Exception as e:
-            logger.error(f"Failed to load mappings from Google Sheet: {e}")
-            raise
+            config['sheet_range'] = os.getenv('SHEET_RANGE', config.get('sheet_range', 'Sheet1!A:B'))
+    elif os.getenv('SHEET_ID') or config.get('sheet_id'):
+        # Sheet was configured but reload failed — fatal on startup
+        raise ValueError("Failed to load mappings from Google Sheet on startup")
 
     return config
 
@@ -202,11 +220,17 @@ def run_continuous(config: dict):
 
     docs_client, vault_client, sync_engine = initialize_services(config)
 
+    def sync_with_refresh():
+        new_mappings = reload_sheet_mappings(config)
+        if new_mappings is not None:
+            sync_engine.mappings = new_mappings
+        run_sync(sync_engine)
+
     # Schedule sync
-    schedule.every(interval).seconds.do(run_sync, sync_engine)
+    schedule.every(interval).seconds.do(sync_with_refresh)
 
     # Run initial sync immediately
-    run_sync(sync_engine)
+    sync_with_refresh()
 
     logger.info("Entering main loop... Press Ctrl+C to stop")
 
