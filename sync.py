@@ -89,19 +89,25 @@ def load_config(config_path: str = None) -> dict:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
     else:
-        # Try to load from environment variable
+        # Build config from individual environment variables (preferred)
+        logger.info("Loading config from environment variables")
+        config = {
+            'sync_interval': int(os.getenv('SYNC_INTERVAL', 300)),
+            'vault_folder_id': os.getenv('VAULT_FOLDER_ID'),
+            'mappings': json.loads(os.getenv('CONFIG_MAPPINGS', '[]'))
+        }
+
+        # Merge CONFIG_YAML as fallback (fill missing values only)
         config_yaml = os.getenv('CONFIG_YAML')
         if config_yaml:
-            logger.info("Loading config from CONFIG_YAML environment variable")
-            config = yaml.safe_load(config_yaml)
-        else:
-            # Default minimal config
-            logger.warning("No config file found, using environment variables only")
-            config = {
-                'sync_interval': int(os.getenv('SYNC_INTERVAL', 300)),
-                'vault_folder_id': os.getenv('VAULT_FOLDER_ID'),
-                'mappings': json.loads(os.getenv('CONFIG_MAPPINGS', '[]'))
-            }
+            try:
+                yaml_config = yaml.safe_load(config_yaml)
+                if isinstance(yaml_config, dict):
+                    for key, value in yaml_config.items():
+                        if not config.get(key):
+                            config[key] = value
+            except Exception as e:
+                logger.warning(f"Failed to parse CONFIG_YAML, ignoring: {e}")
 
     # Optional: override mappings from Google Sheet if provided
     sheet_mappings = reload_sheet_mappings(config)
@@ -331,8 +337,8 @@ def main():
         # Validate config
         if not config.get('vault_folder_id'):
             raise ValueError("vault_folder_id not found in config")
-        if not config.get('mappings'):
-            raise ValueError("No mappings configured")
+        if not config.get('mappings') and not (os.getenv('SHEET_ID') or config.get('sheet_id')):
+            raise ValueError("No mappings configured and no SHEET_ID provided")
 
         logger.info(f"Loaded {len(config['mappings'])} mapping(s)")
 

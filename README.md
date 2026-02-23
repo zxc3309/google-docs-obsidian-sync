@@ -1,208 +1,186 @@
-# Google Drive ↔ Obsidian Vault Sync
+# Google Docs -> Obsidian Vault Sync
 
-Automatically synchronize Google Docs (from one Google account) with Markdown files in your Obsidian vault (stored in another Google account's Drive).
+將 Google Docs（Account A）單向同步為 Markdown 檔案，寫入另一個 Google Drive（Account B）中的 Obsidian Vault。部署於 Railway，全自動雲端執行。
 
 ## Architecture
 
 ```
-Local Obsidian Vault (/Users/weilinchen/Documents/CEsecondbrain)
-    ↕ (Obsidian Sync - for multi-device sync)
-Other Devices
-
-Local Obsidian Vault
-    ↕ (Google Drive Desktop Client - Account B)
-Google Drive Account B (Vault Copy)
-    ↕ (Railway - This Sync Program)
 Google Drive Account A (Google Docs)
+        │
+        │  Service Account A 讀取 Doc，匯出 HTML
+        ▼
+  ┌─────────────────────┐
+  │  Railway Worker      │
+  │  (本程式, 每 5 分鐘)  │
+  │                     │
+  │  HTML → Markdown    │
+  └─────────────────────┘
+        │
+        │  Service Account B 寫入 Markdown
+        ▼
+Google Drive Account B (Vault Copy)
+        │
+        │  Google Drive Desktop Client
+        ▼
+Local Obsidian Vault
 ```
+
+**同步方向：單向（Google Docs → Vault），Vault 端的修改會被覆蓋。**
 
 ## Features
 
-- **Bi-directional sync**: Changes in Google Docs → Markdown, and Markdown → Google Docs
-- **Conflict detection**: Alerts when both sides are modified simultaneously
-- **Automatic conversion**: Google Docs HTML → Markdown with proper formatting
-- **Scheduled polling**: Configurable sync interval
-- **Railway deployment**: Runs in the cloud, no local machine needed
-- **Multi-account support**: Different Google accounts for Docs and Vault
+- **單向同步**：Google Docs HTML → Markdown，自動寫入 Vault
+- **排程輪詢**：預設每 300 秒檢查一次，可自訂間隔
+- **狀態追蹤**：透過 `.sync_state.json` 記錄每份文件的同步時間，只同步有變更的文件
+- **雙帳號隔離**：兩個 Google 帳號各用獨立的 Service Account
+- **映射設定彈性**：支援 `config.yaml`、環境變數、或 Google Sheets 作為映射來源
+- **Railway 部署**：以 Worker 模式運行，搭配 Volume 持久化同步狀態
+
+## Prerequisites
+
+1. **兩個 Google 帳號**：
+   - **Account A**：存放 Google Docs 原始文件
+   - **Account B**：存放 Obsidian Vault（透過 Google Drive Desktop Client 同步至本地）
+
+2. **兩個 GCP Service Account**（各自建在不同 GCP Project 下）：
+   - Account A 的 Service Account：需對目標 Google Docs 有 Editor 權限
+   - Account B 的 Service Account：需對 Vault 資料夾有 Editor 權限
+
+3. **Google Drive Desktop Client**（登入 Account B），將 Vault 同步至本地給 Obsidian 使用
 
 ## Quick Start
 
-### Prerequisites
+### 1. Install dependencies
 
-1. Two Google accounts:
-   - **Account A**: Contains your Google Docs
-   - **Account B**: Contains your Obsidian vault in Google Drive
+```bash
+pip install -r requirements.txt
+```
 
-2. Google Drive Desktop Client installed (logged in with Account B)
+### 2. Set environment variables
 
-3. Obsidian vault synced to Google Drive via Desktop Client
+```bash
+# Service Account 憑證（JSON 檔案路徑，本地開發用）
+export ACCOUNT_A_CREDENTIALS_PATH="path/to/account_a_service_account.json"
+export ACCOUNT_B_CREDENTIALS_PATH="path/to/account_b_service_account.json"
 
-### Local Development
+# Vault 資料夾 ID
+export VAULT_FOLDER_ID="your_vault_folder_id"
+```
 
-1. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 3. Create config
 
-2. **Set up Google Cloud credentials** (see SETUP_GUIDE.md)
+```bash
+cp config.yaml.example config.yaml
+# 編輯 config.yaml，填入 Google Doc ID 與 Vault 路徑的映射
+```
 
-3. **Create config file**:
-   ```bash
-   cp config.yaml.example config.yaml
-   # Edit config.yaml with your settings
-   ```
+### 4. Run
 
-4. **Set environment variables**:
-   ```bash
-   export ACCOUNT_A_CREDENTIALS_PATH="path/to/account_a_service_account.json"
-   export ACCOUNT_B_CREDENTIALS_PATH="path/to/account_b_service_account.json"
-   ```
+```bash
+# 單次同步
+python sync.py --once
 
-5. **Run sync**:
-   ```bash
-   # Run once
-   python sync.py --once
+# 持續同步（每 5 分鐘）
+python sync.py --interval 300
 
-   # Run continuously with 5-minute interval
-   python sync.py --interval 300
+# 查看同步狀態
+python sync.py --status
 
-   # Show status
-   python sync.py --status
-   ```
+# Debug 模式
+python sync.py --debug
+```
 
 ## Railway Deployment
 
-1. **Push to GitHub**:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit"
-   git remote add origin https://github.com/yourusername/your-repo.git
-   git push -u origin main
-   ```
+### Environment Variables
 
-2. **Deploy to Railway**:
-   - Connect your GitHub repository
-   - Set environment variables (see SETUP_GUIDE.md)
-   - Deploy as Worker
+| 變數 | 說明 |
+|------|------|
+| `ACCOUNT_A_CREDENTIALS` | Account A Service Account JSON（完整內容） |
+| `ACCOUNT_B_CREDENTIALS` | Account B Service Account JSON（完整內容） |
+| `VAULT_FOLDER_ID` | Account B Google Drive 中 Vault 資料夾的 ID |
+| `CONFIG_YAML` | `config.yaml` 的完整內容 |
+| `SYNC_INTERVAL` | 同步間隔秒數（預設 300） |
+| `SHEET_ID` | （選填）Google Sheet ID，用來讀取映射 |
+| `SHEET_RANGE` | （選填）Sheet 範圍，預設 `Sheet1!A:B` |
 
-3. **Configure environment variables** in Railway:
-   - `ACCOUNT_A_CREDENTIALS`: Service Account JSON (Account A)
-   - `ACCOUNT_B_CREDENTIALS`: Service Account JSON (Account B)
-   - `VAULT_FOLDER_ID`: Google Drive folder ID for vault
-   - `CONFIG_YAML`: Your config.yaml content (or use file)
-   - `SYNC_INTERVAL`: Sync interval in seconds (e.g., 300)
-   - `SHEET_ID` (optional): Google Sheet ID for mappings (share with Account A service account)
-   - `SHEET_RANGE` (optional): Range to read, default `Sheet1!A:B` with header row `doc_id, vault_path`
+### Persistent Volume
+
+Railway 上需掛載 Volume 至 `/data`，用來持久化 `.sync_state.json`。否則每次部署都會重新同步所有文件。
+
+### Deploy
+
+1. 連結 GitHub repo 至 Railway
+2. 設定上述環境變數
+3. 掛載 Volume 至 `/data`
+4. 部署為 Worker（`Procfile`: `worker: python sync.py`）
 
 ## Configuration
 
-Edit `config.yaml`:
+### config.yaml
 
 ```yaml
-sync_interval: 300  # seconds
+sync_interval: 300
 
 vault_folder_id: "your_vault_folder_id"
 
 mappings:
-  - doc_id: "google_doc_id_from_account_a"
+  - doc_id: "google_doc_id"
     vault_path: "path/in/vault.md"
 ```
 
-### Using Google Sheet for mappings
+### Google Sheets 映射（選填）
 
-- Set `SHEET_ID` (and optionally `SHEET_RANGE`, default `Sheet1!A:B`) in Railway.
-- Share the Sheet with the Account A service account email so it can read it.
-- First row headers must be `doc_id` and `vault_path`; data rows list each mapping.
-- When `SHEET_ID` is set, mappings from the Sheet override `config.yaml`/`CONFIG_YAML`.
+設定 `SHEET_ID` 環境變數後，程式會從 Google Sheet 讀取映射，覆蓋 `config.yaml` 中的設定。
 
-### Finding IDs
+- 將 Sheet 分享給 Account A 的 Service Account email
+- 第一列為標題：`doc_id`, `vault_path`
+- 後續每列為一組映射
 
-- **Google Doc ID**: From URL `https://docs.google.com/document/d/DOC_ID/edit`
-- **Folder ID**: From URL `https://drive.google.com/drive/folders/FOLDER_ID`
+### 找到 ID
 
-## Usage
-
-### Command Line Options
-
-```bash
-python sync.py [OPTIONS]
-
-Options:
-  --config PATH     Path to config file (default: config.yaml)
-  --once            Run sync once and exit
-  --interval SEC    Sync interval in seconds
-  --status          Show current sync status
-  --debug           Enable debug logging
-```
-
-### Conflict Resolution
-
-When both Google Doc and Markdown are modified since last sync:
-
-1. Sync will detect the conflict and log it
-2. Check `conflicts.log` for details
-3. Manually review and resolve (keep one version or merge)
-4. Next sync will proceed based on modification times
+- **Google Doc ID**：URL 中 `https://docs.google.com/document/d/<DOC_ID>/edit`
+- **Folder ID**：URL 中 `https://drive.google.com/drive/folders/<FOLDER_ID>`
 
 ## Project Structure
 
 ```
 .
-├── sync.py                  # Main entry point
+├── sync.py                  # 主程式入口
 ├── modules/
-│   ├── auth.py             # Google authentication
-│   ├── gdrive_client.py    # Drive API wrapper
-│   ├── converter.py        # Doc ↔ Markdown conversion
-│   ├── sync_engine.py      # Core sync logic
-│   └── conflict_handler.py # Conflict management
-├── config.yaml.example     # Configuration template
-├── requirements.txt        # Python dependencies
-├── Procfile               # Railway deployment
-└── README.md              # This file
+│   ├── auth.py              # 雙帳號 Service Account 認證
+│   ├── gdrive_client.py     # Google Docs / Drive / Sheets API 封裝
+│   ├── converter.py         # HTML → Markdown 轉換
+│   ├── sync_engine.py       # 同步引擎（變更偵測、狀態管理）
+│   └── conflict_handler.py  # 衝突偵測與記錄
+├── config.yaml.example      # 設定範本
+├── requirements.txt         # Python 套件
+├── Procfile                 # Railway 部署設定
+└── runtime.txt              # Python 版本（3.11）
 ```
 
 ## How It Works
 
-1. **Polling**: Every X seconds, check all mapped files
-2. **Change Detection**: Compare modification times with last sync
-3. **Direction Determination**:
-   - If only Doc changed → sync to Markdown
-   - If only Markdown changed → sync to Doc
-   - If both changed → flag as conflict
-4. **Conversion**:
-   - Doc → Markdown: Export as HTML, convert with markdownify
-   - Markdown → Doc: Convert to plain text, update via Docs API
-5. **State Tracking**: Save sync state to `.sync_state.json` in vault
+1. **輪詢**：每 N 秒檢查所有映射文件
+2. **變更偵測**：比對 Google Doc 修改時間與上次同步時間
+3. **匯出轉換**：透過 Google Docs API 匯出 HTML，用 `markdownify` 轉為 Markdown
+4. **寫入 Vault**：透過 Google Drive API（Account B 憑證）寫入對應路徑
+5. **狀態儲存**：更新 `.sync_state.json`，記錄同步時間與方向
 
 ## Troubleshooting
 
-### Authentication Errors
+### 認證錯誤
 
-- Verify Service Account credentials are valid
-- Check that Service Accounts have access to both Google Drives
-- Ensure API scopes include Drive and Docs
+- 確認 Service Account JSON 格式正確
+- 確認 Google Docs 已分享給 Account A 的 Service Account email
+- 確認 Vault 資料夾已分享給 Account B 的 Service Account email
 
-### Sync Not Working
+### 同步沒有觸發
 
-- Check logs for error messages
-- Verify vault_folder_id is correct
-- Ensure mappings use correct doc_id and vault_path
-- Test with `--once` and `--debug` flags
+- 用 `--once --debug` 執行，檢查 log 輸出
+- 確認 `vault_folder_id` 正確
+- 確認 `mappings` 中的 `doc_id` 和 `vault_path` 正確
 
-### Conflicts
+### Vault 修改被覆蓋
 
-- Review `conflicts.log`
-- Manually resolve by editing one version
-- Next sync will detect the newer version
-
-## Support
-
-For issues, questions, or contributions:
-- Check SETUP_GUIDE.md for detailed setup instructions
-- Review logs with `--debug` flag
-- Check Railway logs if deployed
-
-## License
-
-MIT
+這是預期行為。目前為單向同步（Doc → Vault），Vault 端的修改會在下次 Doc 變更時被覆蓋。
